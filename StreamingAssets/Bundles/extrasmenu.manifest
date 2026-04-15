@@ -1,0 +1,36 @@
+ManifestFileVersion: 0
+CRC: 4174497351
+Hashes:
+  AssetFileHash:
+    serializedVersion: 2
+    Hash: 9485487ead072a8ed8680ac9f793d64e
+  TypeTreeHash:
+    serializedVersion: 2
+    Hash: c61abb93631f8babd83fd60c60fe6b61
+HashAppended: 0
+ClassTypes:
+- Class: 1
+  Script: {instanceID: 0}
+- Class: 4
+  Script: {instanceID: 0}
+- Class: 21
+  Script: {instanceID: 0}
+- Class: 23
+  Script: {instanceID: 0}
+- Class: 28
+  Script: {instanceID: 0}
+- Class: 48
+  Script: {instanceID: 0}
+- Class: 102
+  Script: {instanceID: 0}
+- Class: 114
+  Script: {fileID: 11500000, guid: 68f4c2900883d4ea0a1f20a9d3b8b7a4, type: 3}
+- Class: 114
+  Script: {fileID: 11500000, guid: 63cb7b3523c984cd2bfc067e8037cb85, type: 3}
+- Class: 115
+  Script: {instanceID: 0}
+- Class: 128
+  Script: {instanceID: 0}
+Assets:
+- Assets/Prefabs/Title/ExtrasMenu.prefab
+Dependencies: []
