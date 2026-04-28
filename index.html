@@ -85,6 +85,9 @@
       const TOTAL_BYTES = (326 + 41) * 1024 * 1024;
       const TOTAL_MB = (326 + 41).toFixed(1);
 
+      const MAX_RETRIES = 3;
+      const RETRY_DELAY_MS = 1000;
+
       const elStatus = document.getElementById("loading-status");
       const elBar = document.getElementById("loading-bar");
       const elMb = document.getElementById("loading-mb");
@@ -97,37 +100,54 @@
         for (const v of bytesReceived.values()) total += v;
         const pct = Math.min(100, (total / TOTAL_BYTES) * 100);
         elBar.style.width = pct + "%";
-        elMb.textContent =
-          (total / (1024 * 1024)).toFixed(1) + " MB / " + TOTAL_MB + " MB";
+        elMb.textContent = (total / (1024 * 1024)).toFixed(1) + " MB / " + TOTAL_MB + " MB";
       }
 
-      async function fetchTracked(url, key) {
-        const resp = await fetch(url);
-        if (!resp.ok) throw new Error("Failed to fetch " + url);
-        const reader = resp.body.getReader();
-        const chunks = [];
-        let received = 0;
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          chunks.push(value);
-          received += value.byteLength;
-          onProgress(key, received);
-        }
-        const merged = new Uint8Array(received);
-        let offset = 0;
-        for (const c of chunks) {
-          merged.set(c, offset);
-          offset += c.byteLength;
-        }
-        return merged.buffer;
+      function sleep(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
       }
 
+      async function fetchWithRetry(url, key, retries = MAX_RETRIES) {
+        for (let attempt = 0; attempt <= retries; attempt++) {
+          try {
+            const resp = await fetch(url);
+            if (!resp.ok) throw new Error("HTTP " + resp.status + " for " + url);
+            const reader = resp.body.getReader();
+            const chunks = [];
+            let received = 0;
+            // Reset progress for this key on retry
+            if (attempt > 0) onProgress(key, 0);
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              chunks.push(value);
+              received += value.byteLength;
+              onProgress(key, received);
+            }
+            const merged = new Uint8Array(received);
+            let offset = 0;
+            for (const c of chunks) {
+              merged.set(c, offset);
+              offset += c.byteLength;
+            }
+            return merged.buffer;
+          } catch (err) {
+            if (attempt < retries) {
+              console.warn(`Retry ${attempt + 1}/${retries} for ${url}:`, err.message);
+              await sleep(RETRY_DELAY_MS * (attempt + 1));
+            } else {
+              throw new Error("Failed after " + (retries + 1) + " attempts: " + url);
+            }
+          }
+        }
+      }
+
+      // Fetch all parts in parallel with per-part retry
       async function fetchAllParts(baseName, numParts) {
         const promises = Array.from({ length: numParts }, (_, i) => {
           const suffix = String(i).padStart(3, "0");
           const url = CDN + "/Build/parts/" + baseName + ".part" + suffix;
-          return fetchTracked(url, baseName + suffix);
+          return fetchWithRetry(url, baseName + suffix);
         });
         const buffers = await Promise.all(promises);
         const total = buffers.reduce((s, b) => s + b.byteLength, 0);
@@ -140,23 +160,33 @@
         return merged.buffer;
       }
 
-      async function fetchText(path) {
-        const resp = await fetch(CDN + "/" + path);
-        if (!resp.ok) throw new Error("Failed to fetch " + path);
-        return resp.text();
+      async function fetchText(path, retries = MAX_RETRIES) {
+        for (let attempt = 0; attempt <= retries; attempt++) {
+          try {
+            const resp = await fetch(CDN + "/" + path);
+            if (!resp.ok) throw new Error("HTTP " + resp.status);
+            return resp.text();
+          } catch (err) {
+            if (attempt < retries) {
+              console.warn(`Retry ${attempt + 1}/${retries} for ${path}:`, err.message);
+              await sleep(RETRY_DELAY_MS * (attempt + 1));
+            } else {
+              throw new Error("Failed to fetch " + path);
+            }
+          }
+        }
       }
 
       async function boot() {
         elStatus.textContent = "Downloading...";
 
-        const [loaderText, frameworkText, dataBuf, wasmBuf] = await Promise.all(
-          [
-            fetchText("Build/bb0d9ecdb05db3e84da20bd14a4f84dc.loader.js"),
-            fetchText("Build/5eb531593953ed3f9d46bf9232472a14.framework.js"),
-            fetchAllParts("1be89627d83a99b9ed0f73daf7c701b0.data", DATA_PARTS),
-            fetchAllParts("d50f42928f17ee1efc318f292db2df90.wasm", WASM_PARTS),
-          ],
-        );
+        // All 4 assets fetched in parallel; parts within each asset also parallel
+        const [loaderText, frameworkText, dataBuf, wasmBuf] = await Promise.all([
+          fetchText("Build/bb0d9ecdb05db3e84da20bd14a4f84dc.loader.js"),
+          fetchText("Build/5eb531593953ed3f9d46bf9232472a14.framework.js"),
+          fetchAllParts("1be89627d83a99b9ed0f73daf7c701b0.data", DATA_PARTS),
+          fetchAllParts("d50f42928f17ee1efc318f292db2df90.wasm", WASM_PARTS)
+        ]);
 
         elStatus.textContent = "Starting...";
         elBar.style.width = "100%";
@@ -165,15 +195,9 @@
         scriptEl.textContent = loaderText;
         document.head.appendChild(scriptEl);
 
-        const dataUrl = URL.createObjectURL(
-          new Blob([dataBuf], { type: "application/octet-stream" }),
-        );
-        const wasmUrl = URL.createObjectURL(
-          new Blob([wasmBuf], { type: "application/wasm" }),
-        );
-        const frameworkUrl = URL.createObjectURL(
-          new Blob([frameworkText], { type: "application/javascript" }),
-        );
+        const dataUrl = URL.createObjectURL(new Blob([dataBuf], { type: "application/octet-stream" }));
+        const wasmUrl = URL.createObjectURL(new Blob([wasmBuf], { type: "application/wasm" }));
+        const frameworkUrl = URL.createObjectURL(new Blob([frameworkText], { type: "application/javascript" }));
 
         createUnityInstance(document.querySelector("#unity-canvas"), {
           dataUrl: dataUrl,
@@ -182,7 +206,7 @@
           streamingAssetsUrl: CDN + "/StreamingAssets",
           companyName: "Infinite Fall",
           productName: "Night in the Woods",
-          productVersion: "1.0",
+          productVersion: "1.0"
         }).then(function () {
           document.getElementById("loading-screen").style.display = "none";
           URL.revokeObjectURL(dataUrl);
